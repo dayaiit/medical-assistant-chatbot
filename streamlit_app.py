@@ -36,7 +36,7 @@ def login_page():
         if username in users and users[username] == password:
             st.session_state.logged_in = True
             st.session_state.username = username
-            st.experimental_rerun()
+            st.rerun()  # Updated from experimental_rerun
         else:
             st.error("Invalid username or password")
 
@@ -64,7 +64,7 @@ def main_app():
             st.session_state.logged_in = False
             st.session_state.username = ""
             st.session_state.messages = []
-            st.experimental_rerun()
+            st.rerun()  # Updated from experimental_rerun
         
         st.header("Prescription Analysis")
         st.file_uploader("Upload a prescription", type=["jpg", "jpeg", "png", "pdf"])
@@ -73,7 +73,7 @@ def main_app():
             st.info("In the full version, this would analyze the prescription using Palmyra-Med-70B-32K.")
             st.session_state.messages.append({"role": "user", "content": "Analyzed prescription"})
             st.session_state.messages.append({"role": "assistant", "content": "Prescription Analysis Results: This feature will analyze medication names, dosages, potential interactions, and other relevant information."})
-            st.experimental_rerun()
+            st.rerun()  # Updated from experimental_rerun
     
     # Chat interface
     st.header("Medical Chat Assistant")
@@ -99,7 +99,7 @@ def main_app():
             # Add assistant response to chat history
             st.session_state.messages.append({"role": "assistant", "content": response})
             
-            st.experimental_rerun()
+            st.rerun()  # Updated from experimental_rerun
 
 # Main logic
 if not st.session_state.logged_in:
