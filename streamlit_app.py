@@ -231,8 +231,66 @@ def call_medical_api(prompt):
             st.session_state['api_debug']['api_key'] = "Not found in secrets"
             return "API key not configured. Using mock response instead.\n\n" + get_mock_response(prompt)
         
-        # Correct NVIDIA API endpoint and model ID
-        api_endpoint = "https://integrate.api.nvidia.com/v1"
+        # Set up SSL options
+        # Suppress SSL warnings
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        
+        # Create session with SSL verification disabled if needed
+        session = requests.Session()
+        session.verify = False  # Disable SSL verification for all requests
+        
+        # List of possible endpoints to try
+        endpoints = [
+            "https://integrate.api.nvidia.com/v1",
+            "https://integrate.api.nvidia.com/v1/chat/completions",
+            "https://api.nvidia.com/v1/chat/completions",
+            "https://api.nvidia.com/nimapi/v1/chat/completions",
+            "https://api.nvidia.com/nimapi/v1/models/ai-palmyra-med-70b/completions",
+            "https://api.nvidia.com/v1/completions",
+            "https://integrate.api.nvidia.com/v1/completions"
+        ]
+        
+        # List of possible payload formats to try
+        payloads = [
+            # Standard OpenAI-like format
+            {
+                "model": "ai-palmyra-med-70b",
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "max_tokens": 1000
+            },
+            # Alternative format often used by NVIDIA
+            {
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "max_tokens": 1000
+            },
+            # Direct prompt format
+            {
+                "model": "ai-palmyra-med-70b",
+                "prompt": prompt,
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "max_tokens": 1000
+            },
+            # NVIDIA NIM specific format
+            {
+                "model_id": "ai-palmyra-med-70b",
+                "prompt": prompt,
+                "parameters": {
+                    "temperature": 0.7,
+                    "top_p": 0.9,
+                    "max_tokens": 1000
+                }
+            }
+        ]
         
         # Prepare headers
         headers = {
@@ -240,70 +298,128 @@ def call_medical_api(prompt):
             "Content-Type": "application/json"
         }
         
-        # Correct payload format
-        payload = {
-            "model": "ai-palmyra-med-70b",
+        # Try each combination of endpoint and payload
+        for i, endpoint in enumerate(endpoints):
+            for j, payload in enumerate(payloads):
+                try:
+                    st.session_state['api_debug'][f'attempt_{i}_{j}_endpoint'] = endpoint
+                    st.session_state['api_debug'][f'attempt_{i}_{j}_payload'] = payload
+                    
+                    # Make the API request
+                    response = session.post(
+                        endpoint,
+                        headers=headers,
+                        json=payload,
+                        timeout=30
+                    )
+                    
+                    st.session_state['api_debug'][f'attempt_{i}_{j}_status_code'] = response.status_code
+                    st.session_state['api_debug'][f'attempt_{i}_{j}_response'] = response.text[:100] if response.text else "No response"
+                    
+                    if response.status_code == 200:
+                        try:
+                            result = response.json()
+                            
+                            # Try different response formats
+                            content = None
+                            
+                            # Format 1: OpenAI-style
+                            if 'choices' in result and len(result['choices']) > 0:
+                                if 'message' in result['choices'][0] and 'content' in result['choices'][0]['message']:
+                                    content = result['choices'][0]['message']['content']
+                                elif 'text' in result['choices'][0]:
+                                    content = result['choices'][0]['text']
+                            
+                            # Format 2: Direct response
+                            elif 'text' in result:
+                                content = result['text']
+                            elif 'output' in result:
+                                content = result['output']
+                            elif 'generated_text' in result:
+                                content = result['generated_text']
+                            
+                            # If we got a valid response, return it
+                            if content:
+                                st.session_state['api_debug']['successful_endpoint'] = endpoint
+                                st.session_state['api_debug']['successful_payload'] = payload
+                                return content
+                            else:
+                                st.session_state['api_debug'][f'attempt_{i}_{j}_content_not_found'] = "Could not extract content from response"
+                        except Exception as e:
+                            st.session_state['api_debug'][f'attempt_{i}_{j}_parsing_error'] = str(e)
+                
+                except Exception as e:
+                    st.session_state['api_debug'][f'attempt_{i}_{j}_exception'] = str(e)
+        
+        # If we've tried all endpoints and payloads without success, try a few extra options
+        
+        # Try NVIDIA NIM specific endpoint (often used for newer models)
+        nim_endpoint = "https://nim.api.nvidia.com/v1/inference"
+        nim_payload = {
+            "input": prompt,
+            "model": "ai-palmyra-med-70b"
+        }
+        
+        try:
+            st.session_state['api_debug']['nim_endpoint'] = nim_endpoint
+            st.session_state['api_debug']['nim_payload'] = nim_payload
+            
+            nim_response = session.post(
+                nim_endpoint,
+                headers=headers,
+                json=nim_payload,
+                timeout=30
+            )
+            
+            st.session_state['api_debug']['nim_status_code'] = nim_response.status_code
+            
+            if nim_response.status_code == 200:
+                try:
+                    result = nim_response.json()
+                    if 'output' in result:
+                        return result['output']
+                except Exception as e:
+                    st.session_state['api_debug']['nim_parsing_error'] = str(e)
+        except Exception as e:
+            st.session_state['api_debug']['nim_exception'] = str(e)
+        
+        # Final attempt with a different model name format
+        final_endpoint = "https://api.nvidia.com/v1/chat/completions"
+        final_payload = {
+            "model": "palmyra-med-70b",  # Try without the "ai-" prefix
             "messages": [
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.7,
-            "top_p": 0.9,
             "max_tokens": 1000
         }
         
-        st.session_state['api_debug']['endpoint'] = api_endpoint
-        st.session_state['api_debug']['payload'] = payload
-        
-        # Create session with SSL verification disabled if needed
-        session = requests.Session()
-        
-        # First try with SSL verification
         try:
-            response = session.post(
-                api_endpoint,
+            st.session_state['api_debug']['final_endpoint'] = final_endpoint
+            st.session_state['api_debug']['final_payload'] = final_payload
+            
+            final_response = session.post(
+                final_endpoint,
                 headers=headers,
-                json=payload,
+                json=final_payload,
                 timeout=30
             )
-        except requests.exceptions.SSLError:
-            # If SSL verification fails, try without it (with warning)
-            st.session_state['api_debug']['ssl_error'] = "SSL verification failed, trying without verification"
             
-            # Suppress SSL warnings
-            import urllib3
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            st.session_state['api_debug']['final_status_code'] = final_response.status_code
             
-            # Retry without SSL verification
-            response = session.post(
-                api_endpoint,
-                headers=headers,
-                json=payload,
-                timeout=30,
-                verify=False
-            )
+            if final_response.status_code == 200:
+                try:
+                    result = final_response.json()
+                    if 'choices' in result and len(result['choices']) > 0:
+                        if 'message' in result['choices'][0] and 'content' in result['choices'][0]['message']:
+                            return result['choices'][0]['message']['content']
+                except Exception as e:
+                    st.session_state['api_debug']['final_parsing_error'] = str(e)
+        except Exception as e:
+            st.session_state['api_debug']['final_exception'] = str(e)
         
-        st.session_state['api_debug']['status_code'] = response.status_code
-        st.session_state['api_debug']['response_preview'] = response.text[:200] if response.text else "No response"
-        
-        if response.status_code == 200:
-            try:
-                result = response.json()
-                # Extract content based on correct response format
-                if 'choices' in result and len(result['choices']) > 0:
-                    if 'message' in result['choices'][0] and 'content' in result['choices'][0]['message']:
-                        return result['choices'][0]['message']['content']
-                    elif 'text' in result['choices'][0]:
-                        return result['choices'][0]['text']
-                else:
-                    st.session_state['api_debug']['unexpected_format'] = "Response format not recognized"
-                    st.session_state['api_debug']['full_response'] = str(result)[:500]
-            except Exception as e:
-                st.session_state['api_debug']['parsing_error'] = str(e)
-        else:
-            st.session_state['api_debug']['error_response'] = response.text
-        
-        # Fall back to mock response if API call fails
-        return "API connection failed. Using mock response instead.\n\n" + get_mock_response(prompt)
+        # Fall back to mock response if all API calls fail
+        return "API connection failed after trying multiple endpoints. Using mock response instead.\n\n" + get_mock_response(prompt)
         
     except Exception as e:
         st.session_state['api_debug']['exception'] = str(e)
