@@ -1,9 +1,10 @@
-
 import streamlit as st
+import requests
+import json
 
 # Set page configuration
 st.set_page_config(
-    page_title="Medical Assistant",
+    page_title="Dr. Daya Shankar's Medical Assistant",
     page_icon="🩺",
     layout="wide"
 )
@@ -18,11 +19,113 @@ if 'logged_in' not in st.session_state:
 if 'username' not in st.session_state:
     st.session_state.username = ""
 
-# Simple user database
+# User database
 users = {
     "doctor1": "password123",
     "doctor2": "password456"
 }
+
+# Function to call the API
+def call_palmyra_api(prompt):
+    # Debug information
+    st.session_state['api_debug'] = {}
+    
+    try:
+        # Check if API key exists
+        if "WRITER_API_KEY" in st.secrets:
+            api_key = st.secrets["WRITER_API_KEY"]
+            masked_key = api_key[:4] + "..." + api_key[-4:]
+            st.session_state['api_debug']['api_key'] = f"Found (masked: {masked_key})"
+        else:
+            st.session_state['api_debug']['api_key'] = "Not found in secrets"
+            return "API key not configured. Please contact the administrator."
+        
+        # Try NVIDIA NIM API endpoint first
+        nvidia_endpoint = "https://api.nvidia.com/v1/llm/completions"
+        
+        # Prepare headers
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # Prepare payload for NVIDIA NIM API
+        payload = {
+            "model": "writer/palmyra-med-70b-32k",
+            "messages": [
+                {"role": "system", "content": "You are a medical assistant using Palmyra-Med-70B-32K model. Provide detailed, technical explanations for medical professionals."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 1000
+        }
+        
+        # Log what we're about to do
+        st.session_state['api_debug']['request_to'] = nvidia_endpoint
+        st.session_state['api_debug']['payload'] = payload
+        
+        # Make the API request
+        response = requests.post(
+            nvidia_endpoint,
+            headers=headers,
+            json=payload,
+            timeout=30  # 30 second timeout
+        )
+        
+        # Log response info
+        st.session_state['api_debug']['status_code'] = response.status_code
+        st.session_state['api_debug']['response_headers'] = dict(response.headers)
+        
+        # Check if request was successful
+        if response.status_code == 200:
+            try:
+                result = response.json()
+                content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+                st.session_state['api_debug']['parsed_response'] = "Success"
+                return content
+            except Exception as e:
+                st.session_state['api_debug']['parsing_error'] = str(e)
+                st.session_state['api_debug']['response_preview'] = response.text[:500]
+                return f"Error parsing API response. Please try again later."
+        else:
+            # Try Writer API as fallback
+            writer_endpoint = "https://api.writer.com/v1/completions"
+            
+            # Different payload format for Writer API
+            writer_payload = {
+                "model": "palmyra-med-70b-32k",
+                "prompt": prompt,
+                "temperature": 0.7,
+                "max_tokens": 1000
+            }
+            
+            st.session_state['api_debug']['fallback_request_to'] = writer_endpoint
+            
+            # Try Writer API
+            try:
+                writer_response = requests.post(
+                    writer_endpoint,
+                    headers=headers,
+                    json=writer_payload,
+                    timeout=30
+                )
+                
+                st.session_state['api_debug']['fallback_status_code'] = writer_response.status_code
+                
+                if writer_response.status_code == 200:
+                    result = writer_response.json()
+                    content = result.get('choices', [{}])[0].get('text', '')
+                    st.session_state['api_debug']['fallback_success'] = True
+                    return content
+                else:
+                    st.session_state['api_debug']['fallback_error'] = writer_response.text[:500]
+                    return f"Error: API returned status code {response.status_code}. Please try again later."
+            except Exception as e:
+                st.session_state['api_debug']['fallback_exception'] = str(e)
+                return f"Error connecting to API: {str(e)}. Please try again later."
+    except Exception as e:
+        st.session_state['api_debug']['exception'] = str(e)
+        return f"An error occurred: {str(e)}. Please try again later."
 
 # Login page
 def login_page():
@@ -36,25 +139,13 @@ def login_page():
         if username in users and users[username] == password:
             st.session_state.logged_in = True
             st.session_state.username = username
-            st.rerun()  # Updated from experimental_rerun
+            st.rerun()
         else:
             st.error("Invalid username or password")
 
-# Simple response function
-def get_medical_response(query):
-    if "diabetes" in query.lower():
-        return "Here's information about diabetes management based on current guidelines: The ADA's Standards of Medical Care recommends individualized A1C targets, typically <7% for most patients. First-line therapy remains metformin for most patients with Type 2 diabetes. GLP-1 receptor agonists and SGLT-2 inhibitors are recommended for patients with cardiovascular disease."
-    elif "hypertension" in query.lower():
-        return "Regarding hypertension management, current guidelines recommend: Target BP <130/80 mmHg for most patients according to ACC/AHA guidelines. First-line treatments include thiazide diuretics, ACE inhibitors, ARBs, and CCBs. Lifestyle modifications remain foundational (DASH diet, sodium restriction, physical activity)."
-    else:
-        return "Thank you for your medical query. As an AI medical assistant, I can provide general information based on medical literature, but clinical judgment is essential. For more specific guidance, additional clinical details would be helpful."
-
 # Main application
 def main_app():
-    st.title(f"Medical Assistant - Welcome, {st.session_state.username}")
-    
-    # Disclaimer
-    st.warning("**Important:** This tool is for healthcare professionals only. All AI-generated responses should be reviewed by qualified medical personnel. Not intended for direct patient use.")
+    st.title("Medical Chat Assistant")
     
     # Sidebar
     with st.sidebar:
@@ -64,19 +155,30 @@ def main_app():
             st.session_state.logged_in = False
             st.session_state.username = ""
             st.session_state.messages = []
-            st.rerun()  # Updated from experimental_rerun
+            st.rerun()
         
         st.header("Prescription Analysis")
-        st.file_uploader("Upload a prescription", type=["jpg", "jpeg", "png", "pdf"])
+        uploaded_file = st.file_uploader("Upload a prescription", type=["jpg", "jpeg", "png", "pdf"])
         
-        if st.button("Analyze Prescription"):
-            st.info("In the full version, this would analyze the prescription using Palmyra-Med-70B-32K.")
-            st.session_state.messages.append({"role": "user", "content": "Analyzed prescription"})
-            st.session_state.messages.append({"role": "assistant", "content": "Prescription Analysis Results: This feature will analyze medication names, dosages, potential interactions, and other relevant information."})
-            st.rerun()  # Updated from experimental_rerun
-    
-    # Chat interface
-    st.header("Medical Chat Assistant")
+        if uploaded_file is not None:
+            st.write(f"Uploaded: {uploaded_file.name}")
+            # Display the file info
+            file_details = {"Filename": uploaded_file.name, "FileType": uploaded_file.type, "FileSize": f"{uploaded_file.size / 1024:.2f} KB"}
+            st.write(file_details)
+            
+            # Show a button to analyze the prescription
+            if st.button("Analyze Prescription"):
+                with st.spinner("Analyzing prescription..."):
+                    # Create a prompt for prescription analysis
+                    prompt = f"I am a medical professional analyzing a prescription image. I need to extract the following information: medication names, dosages, frequencies, and any special instructions. I also need to identify potential drug interactions or concerning issues."
+                    
+                    # Get API response
+                    response = call_palmyra_api(prompt)
+                    
+                    # Add to chat history
+                    st.session_state.messages.append({"role": "user", "content": f"Analyzed prescription: {uploaded_file.name}"})
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                    st.rerun()
     
     # Display chat messages
     for message in st.session_state.messages:
@@ -88,18 +190,29 @@ def main_app():
     # User input
     user_input = st.text_input("Type your medical question here...")
     
-    if st.button("Send"):
-        if user_input:
-            # Add user message to chat history
-            st.session_state.messages.append({"role": "user", "content": user_input})
-            
-            # Get and display response
-            response = get_medical_response(user_input)
-            
-            # Add assistant response to chat history
-            st.session_state.messages.append({"role": "assistant", "content": response})
-            
-            st.rerun()  # Updated from experimental_rerun
+    col1, col2 = st.columns([1, 5])
+    with col1:
+        if st.button("Send"):
+            if user_input:
+                # Add user message to chat history
+                st.session_state.messages.append({"role": "user", "content": user_input})
+                
+                # Create a structured prompt for medical context
+                prompt = f"As a medical professional, I need information about: {user_input}. Please provide a detailed, technical explanation suitable for healthcare providers."
+                
+                # Call the API with a loading spinner
+                with st.spinner("Generating response..."):
+                    response = call_palmyra_api(prompt)
+                    
+                # Add assistant response to chat history
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                st.rerun()
+    
+    # Debug information section
+    if st.checkbox("Show API debug info", False):
+        st.write("### API Debug Information")
+        if 'api_debug' in st.session_state:
+            st.json(st.session_state['api_debug'])
 
 # Main logic
 if not st.session_state.logged_in:
