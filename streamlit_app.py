@@ -231,8 +231,8 @@ def call_medical_api(prompt):
             st.session_state['api_debug']['api_key'] = "Not found in secrets"
             return "API key not configured. Using mock response instead.\n\n" + get_mock_response(prompt)
         
-        # NVIDIA NIM API endpoint (newer endpoint)
-        api_endpoint = "https://api.nvcf.nvidia.com/v2/llm/completions"
+        # Correct NVIDIA API endpoint and model ID
+        api_endpoint = "https://integrate.api.nvidia.com/v1"
         
         # Prepare headers
         headers = {
@@ -240,113 +240,74 @@ def call_medical_api(prompt):
             "Content-Type": "application/json"
         }
         
-        # Prepare payload
+        # Correct payload format
         payload = {
-            "model": "writer/palmyra-med-70b-32k",
+            "model": "ai-palmyra-med-70b",
             "messages": [
-                {"role": "system", "content": "You are a medical assistant using Palmyra-Med-70B-32K model. Provide detailed, evidence-based responses for healthcare professionals. For prescription analysis, identify medications, dosages, potential interactions, and clinical considerations."},
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.7,
+            "top_p": 0.9,
             "max_tokens": 1000
         }
         
-        st.session_state['api_debug']['request_to'] = api_endpoint
+        st.session_state['api_debug']['endpoint'] = api_endpoint
         st.session_state['api_debug']['payload'] = payload
         
-        # Create a session with SSL verification disabled
+        # Create session with SSL verification disabled if needed
         session = requests.Session()
-        session.verify = False
         
-        # Suppress SSL warnings
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        
-        # Make the API request
-        response = session.post(
-            api_endpoint,
-            headers=headers,
-            json=payload,
-            timeout=30
-        )
+        # First try with SSL verification
+        try:
+            response = session.post(
+                api_endpoint,
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+        except requests.exceptions.SSLError:
+            # If SSL verification fails, try without it (with warning)
+            st.session_state['api_debug']['ssl_error'] = "SSL verification failed, trying without verification"
+            
+            # Suppress SSL warnings
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            
+            # Retry without SSL verification
+            response = session.post(
+                api_endpoint,
+                headers=headers,
+                json=payload,
+                timeout=30,
+                verify=False
+            )
         
         st.session_state['api_debug']['status_code'] = response.status_code
-        st.session_state['api_debug']['response_preview'] = response.text[:500] if response.text else "No response text"
+        st.session_state['api_debug']['response_preview'] = response.text[:200] if response.text else "No response"
         
         if response.status_code == 200:
             try:
                 result = response.json()
-                content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
-                if content:
-                    return content
+                # Extract content based on correct response format
+                if 'choices' in result and len(result['choices']) > 0:
+                    if 'message' in result['choices'][0] and 'content' in result['choices'][0]['message']:
+                        return result['choices'][0]['message']['content']
+                    elif 'text' in result['choices'][0]:
+                        return result['choices'][0]['text']
                 else:
-                    st.session_state['api_debug']['error'] = "No content in response"
+                    st.session_state['api_debug']['unexpected_format'] = "Response format not recognized"
+                    st.session_state['api_debug']['full_response'] = str(result)[:500]
             except Exception as e:
                 st.session_state['api_debug']['parsing_error'] = str(e)
+        else:
+            st.session_state['api_debug']['error_response'] = response.text
         
-        # Try original endpoint as fallback
-        fallback_endpoint = "https://api.nvidia.com/v1/llm/completions"
-        st.session_state['api_debug']['fallback_endpoint'] = fallback_endpoint
-        
-        # Make the fallback API request
-        fallback_response = session.post(
-            fallback_endpoint,
-            headers=headers,
-            json=payload,
-            timeout=30
-        )
-        
-        st.session_state['api_debug']['fallback_status_code'] = fallback_response.status_code
-        
-        if fallback_response.status_code == 200:
-            try:
-                result = fallback_response.json()
-                content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
-                if content:
-                    return content
-                else:
-                    st.session_state['api_debug']['fallback_error'] = "No content in response"
-            except Exception as e:
-                st.session_state['api_debug']['fallback_parsing_error'] = str(e)
-        
-        # Try Writer API format as a last resort
-        writer_endpoint = "https://api.writer.com/v1/generate"
-        writer_payload = {
-            "modelId": "palmyra-med-70b-32k",
-            "prompt": prompt,
-            "temperature": 0.7,
-            "maxTokens": 1000
-        }
-        
-        st.session_state['api_debug']['writer_endpoint'] = writer_endpoint
-        
-        writer_response = session.post(
-            writer_endpoint,
-            headers=headers,
-            json=writer_payload,
-            timeout=30
-        )
-        
-        st.session_state['api_debug']['writer_status_code'] = writer_response.status_code
-        
-        if writer_response.status_code == 200:
-            try:
-                result = writer_response.json()
-                content = result.get('text', '')
-                if content:
-                    return content
-                else:
-                    st.session_state['api_debug']['writer_error'] = "No content in response"
-            except Exception as e:
-                st.session_state['api_debug']['writer_parsing_error'] = str(e)
-        
-        # Fall back to mock response if all API calls fail
+        # Fall back to mock response if API call fails
         return "API connection failed. Using mock response instead.\n\n" + get_mock_response(prompt)
         
     except Exception as e:
         st.session_state['api_debug']['exception'] = str(e)
         return f"An error occurred: {str(e)}. Using mock response instead.\n\n" + get_mock_response(prompt)
-
 # Login page
 def login_page():
     st.markdown('<h1 class="main-title">Dr. Daya\'s Clinic Medical Assistant</h1>', unsafe_allow_html=True)
