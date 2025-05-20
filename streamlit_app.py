@@ -4,128 +4,151 @@ import time
 import sys
 import re
 
-# Medical LLM Query Function
+# Medical LLM Query Function with enhanced reliability
 def query_medical_llm(prompt):
     """
-    Query the Meditron-7B medical LLM through HuggingFace Inference API
-    No API key required - uses free tier
+    Query medical LLM models with fallback options and specialized knowledge
     """
-    API_URL = "https://api-inference.huggingface.co/models/epfl-llm/meditron-7b"
-    
-    # Medical-specific system prompt
-    system_prompt = """You are a medical assistant providing evidence-based guidance to healthcare professionals. 
-    Focus on clinical information including diagnosis, treatment, and management strategies.
-    Always remind users to verify with current guidelines and use clinical judgment.
-    Format your response with clear sections, organize recommendations systematically,
-    and note important warnings or contraindications when applicable."""
-    
-    # Format the prompt for the model
-    full_prompt = f"{system_prompt}\n\nPhysician Query: {prompt}\n\nMedical Response:"
-    
-    # Prepare the payload
-    payload = {
-        "inputs": full_prompt,
-        "parameters": {
-            "max_new_tokens": 1024,
-            "temperature": 0.1,
-            "top_p": 0.95,
-            "repetition_penalty": 1.15,
-            "do_sample": True
+    # Multiple model options for reliability
+    models = [
+        {
+            "name": "Meditron-7B",
+            "url": "https://api-inference.huggingface.co/models/epfl-llm/meditron-7b",
+            "system_prompt": """You are a medical assistant providing evidence-based guidance to healthcare professionals. 
+            Focus on clinical information including diagnosis, treatment, and management strategies.
+            Always remind users to verify with current guidelines and use clinical judgment.
+            Format your response with clear sections, organize recommendations systematically,
+            and note important warnings or contraindications when applicable."""
+        },
+        {
+            "name": "BioMistral-7B",
+            "url": "https://api-inference.huggingface.co/models/BioMistral/BioMistral-7B",
+            "system_prompt": """You are a medical assistant for healthcare professionals.
+            Provide detailed clinical information with evidence-based recommendations.
+            Include specific diagnostic criteria, treatment protocols, and appropriate citations.
+            Always remind users to verify with current guidelines and use clinical judgment."""
         }
-    }
+    ]
     
-    # Initialize headers (empty if no API key is used)
-    headers = {}
-    
-    # Optional: Add API key if available in secrets
-    if "HUGGINGFACE_API_KEY" in st.secrets:
-        headers["Authorization"] = f"Bearer {st.secrets['HUGGINGFACE_API_KEY']}"
-    
-    # Try to get a response with retries
-    for attempt in range(3):
+    # Try each model in sequence
+    for model in models:
         try:
-            response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+            # Format the prompt for the model
+            full_prompt = f"{model['system_prompt']}\n\nPhysician Query: {prompt}\n\nMedical Response:"
             
-            # Handle successful response
-            if response.status_code == 200:
-                result = response.json()[0]["generated_text"]
-                
-                # Extract just the response part (after the prompt)
-                if "Medical Response:" in result:
-                    answer = result.split("Medical Response:")[1].strip()
-                else:
-                    # Fallback extraction method
-                    answer = result.replace(full_prompt, "").strip()
-                
-                return answer, True
+            # Prepare the payload with optimized parameters
+            payload = {
+                "inputs": full_prompt,
+                "parameters": {
+                    "max_new_tokens": 1024,
+                    "temperature": 0.1,
+                    "top_p": 0.95,
+                    "repetition_penalty": 1.15,
+                    "do_sample": True
+                }
+            }
             
-            # Handle model loading state
-            elif response.status_code == 503 and "loading" in response.text.lower():
-                if attempt < 2:  # Try again if not the last attempt
-                    wait_time = (attempt + 1) * 10
-                    time.sleep(wait_time)
+            # Initialize headers (empty if no API key is used)
+            headers = {}
+            
+            # Optional: Add API key if available in secrets
+            if "HUGGINGFACE_API_KEY" in st.secrets:
+                headers["Authorization"] = f"Bearer {st.secrets['HUGGINGFACE_API_KEY']}"
+            
+            # Add timeout and retry logic
+            for attempt in range(3):
+                try:
+                    response = requests.post(
+                        model["url"], 
+                        headers=headers, 
+                        json=payload, 
+                        timeout=60
+                    )
+                    
+                    # Handle successful response
+                    if response.status_code == 200:
+                        result = response.json()[0]["generated_text"]
+                        
+                        # Clean up response and remove any HTML tags
+                        clean_response = result.replace("</div>", "")
+                        
+                        # Handle result extraction differently based on model
+                        if "Medical Response:" in clean_response:
+                            answer = clean_response.split("Medical Response:")[1].strip()
+                        else:
+                            # Fallback extraction method
+                            answer = clean_response.replace(full_prompt, "").strip()
+                        
+                        return answer, True, model["name"]
+                    
+                    # Model still loading
+                    elif response.status_code == 503 and "loading" in response.text.lower():
+                        if attempt < 2:
+                            time.sleep((attempt + 1) * 5)  # Progressive backoff
+                            continue
+                    
+                    # Other errors, retry
+                    else:
+                        if attempt < 2:
+                            time.sleep(2)
+                        else:
+                            break
+                        
+                except requests.exceptions.Timeout:
+                    if attempt < 2:
+                        time.sleep(5)
                     continue
-                else:
-                    # Use fallback on final attempt
-                    return get_medical_fallback(prompt), False
-            
-            # Handle other errors
-            else:
-                if attempt < 2:
-                    time.sleep(5)
+                except Exception as e:
+                    if attempt < 2:
+                        time.sleep(3)
                     continue
-                else:
-                    return get_medical_fallback(prompt), False
                     
         except Exception as e:
-            if attempt < 2:
-                time.sleep(5)
-                continue
-            else:
-                return get_medical_fallback(prompt), False
+            continue
     
-    # If all attempts fail
-    return get_medical_fallback(prompt), False
+    # If all models fail, use enhanced local database
+    return get_enhanced_medical_fallback(prompt), False, "Local Medical Database"
 
-# Local fallback medical knowledge
-def get_medical_fallback(query):
-    """Provide reliable medical information when API is unavailable"""
+# Enhanced medical knowledge database with tuberculosis and other detailed conditions
+def get_enhanced_medical_fallback(query):
+    """Provide reliable medical information from local database"""
     
     # Convert query to lowercase for matching
     query_lower = query.lower()
     
-    # Extract key medical terms from the query
-    def extract_medical_terms(text):
-        # Common medical conditions
-        conditions = [
-            "pneumonia", "hypertension", "diabetes", "asthma", "copd", 
-            "heart failure", "stroke", "cancer", "infection", "sepsis",
-            "arrhythmia", "hemoptysis", "lung mass", "lung cancer"
-        ]
-        
-        # Check for each condition in the text
-        found_terms = []
-        for condition in conditions:
-            if condition in text:
-                found_terms.append(condition)
-                
-        # Look for specific combinations
-        if "lung" in text and ("mass" in text or "nodule" in text):
-            found_terms.append("lung mass")
-        if "chest" in text and "pain" in text:
-            found_terms.append("chest pain")
-        if "shortness" in text and "breath" in text:
-            found_terms.append("dyspnea")
-        if "blood" in text and "pressure" in text:
-            found_terms.append("hypertension")
-            
-        return found_terms
-    
-    # Find medical terms in the query
-    medical_terms = extract_medical_terms(query_lower)
-    
-    # Comprehensive medical knowledge base
+    # Comprehensive medical knowledge base with enhanced content
     medical_database = {
+        "tuberculosis": """
+        # Tuberculosis: Clinical and Pathological Features
+        
+        ## Histological Hallmarks
+        1. **Caseating Granulomas**: The most characteristic feature, consisting of:
+           - Central area of caseous necrosis (cheese-like appearance)
+           - Surrounded by epithelioid histiocytes, lymphocytes, and Langhans giant cells
+           
+        2. **Langhans Giant Cells**: Distinctive multinucleated giant cells with:
+           - Nuclei arranged in a horseshoe or peripheral pattern
+           - Formed by fusion of macrophages
+        
+        3. **Acid-Fast Bacilli**: Mycobacterium tuberculosis organisms
+           - Rod-shaped bacteria visible with Ziehl-Neelsen or auramine-rhodamine stains
+           - Often sparse and difficult to identify in tissue sections
+        
+        ## Additional Histopathological Features
+        - Fibrotic encapsulation in chronic lesions
+        - Lymphocytic infiltration at periphery
+        - Satellite granulomas surrounding main lesion
+        - Variable degree of calcification in healed lesions
+        
+        ## Diagnostic Methods
+        - Histopathology of biopsied tissue
+        - Acid-fast staining
+        - PCR for mycobacterial DNA
+        - Culture confirmation (gold standard)
+        
+        Always verify with current guidelines and use clinical judgment.
+        """,
+        
         "lung mass": """
         # Approach to Lung Mass Evaluation
         
@@ -278,17 +301,94 @@ def get_medical_fallback(query):
         - **Non-cardiac etiology**: Treat underlying cause
         
         Always verify with current guidelines and use clinical judgment.
+        """,
+        
+        "asthma": """
+        # Asthma Management
+        
+        ## Classification
+        1. **Intermittent**: Symptoms <2 days/week, nighttime awakenings <2x/month
+        2. **Mild Persistent**: Symptoms >2 days/week, nighttime awakenings 3-4x/month
+        3. **Moderate Persistent**: Daily symptoms, nighttime awakenings >1x/week
+        4. **Severe Persistent**: Throughout the day, nighttime awakenings 7x/week
+        
+        ## Stepwise Management Approach
+        
+        ### Step 1 (Intermittent)
+        - **SABA** as needed (e.g., albuterol)
+        
+        ### Step 2 (Mild Persistent)
+        - **Low-dose ICS** daily (e.g., budesonide, fluticasone)
+        - Alternative: Leukotriene modifier or cromolyn
+        
+        ### Step 3 (Mild to Moderate)
+        - **Low-dose ICS + LABA** (e.g., fluticasone/salmeterol)
+        - Alternative: Medium-dose ICS
+        
+        ### Step 4 (Moderate)
+        - **Medium-dose ICS + LABA**
+        - Consider adding tiotropium for patients ≥12 years
+        
+        ### Step 5 (Moderate to Severe)
+        - **High-dose ICS + LABA**
+        - Consider biologics for specific phenotypes (omalizumab for allergic)
+        
+        ### Step 6 (Severe)
+        - **High-dose ICS + LABA + oral corticosteroids**
+        - Biologics based on phenotype
+        
+        ## Monitoring
+        - **Spirometry**: At least annually
+        - **Peak flow monitoring**: For moderate-severe or poorly controlled
+        - **Symptom control assessment**: Every 2-6 weeks while gaining control, then 1-6 months
+        
+        ## Exacerbation Management
+        - **Mild-Moderate**: SABA q4-6h, oral corticosteroids if inadequate response
+        - **Severe**: Continuous SABA for first hour, IV corticosteroids, consider magnesium
+        
+        Always verify with current guidelines and use clinical judgment.
         """
     }
     
-    # Try to match specific medical terms
-    for term in medical_terms:
-        if term in medical_database:
-            return medical_database[term] + "\n\n(Response provided from local medical database.)"
+    # Special terms to check for in query
+    medical_terms = [
+        "tuberculosis", "tb", "mycobacterium", "granuloma", "caseating", "langhans",
+        "pneumonia", "cap", "respiratory infection", 
+        "hypertension", "high blood pressure", "htn",
+        "diabetes", "dm", "hyperglycemia", "t2dm",
+        "asthma", "wheeze", "bronchospasm",
+        "chest pain", "angina", "cardiac", "heart attack"
+    ]
     
-    # Check for lung cancer patterns
-    if any(term in query_lower for term in ["hemoptysis", "cough"]) and any(term in query_lower for term in ["weight loss", "smoking"]):
-        return medical_database["lung mass"] + "\n\n(Response provided from local medical database.)"
+    # Check for specific terms in query
+    found_terms = []
+    for term in medical_terms:
+        if term in query_lower:
+            found_terms.append(term)
+    
+    # Handle histology/pathology questions specifically for TB
+    if ("histolog" in query_lower or "patholog" in query_lower or "histopatholog" in query_lower or "microscop" in query_lower) and \
+       any(term in query_lower for term in ["tb", "tuberculosis", "granuloma"]):
+        return medical_database["tuberculosis"]
+    
+    # Match based on found terms
+    for term in found_terms:
+        if term in ["tuberculosis", "tb", "mycobacterium", "granuloma", "caseating", "langhans"]:
+            return medical_database["tuberculosis"]
+        elif term in ["pneumonia", "cap", "respiratory infection"]:
+            return medical_database["pneumonia"]
+        elif term in ["hypertension", "high blood pressure", "htn"]:
+            return medical_database["hypertension"]
+        elif term in ["diabetes", "dm", "hyperglycemia", "t2dm"]:
+            return medical_database["diabetes"]
+        elif term in ["chest pain", "angina", "cardiac", "heart attack"]:
+            return medical_database["chest pain"]
+        elif term in ["asthma", "wheeze", "bronchospasm"]:
+            return medical_database["asthma"]
+    
+    # Check for lung mass related terms
+    if "lung" in query_lower and any(term in query_lower for term in ["mass", "nodule", "tumor", "cancer"]):
+        return medical_database["lung mass"]
     
     # General fallback response
     return """
@@ -307,8 +407,6 @@ def get_medical_fallback(query):
     - Note patient education provided and follow-up plans
     
     As always, clinical decisions should be based on professional judgment and current best practices.
-    
-    (Response provided from local medical database.)
     """
 
 # Function to analyze prescriptions
@@ -360,7 +458,12 @@ def show_ask_medical_questions():
             if message["role"] == "user":
                 st.markdown(f"<div style='background-color:#2e4a67; padding:10px; border-radius:5px; margin-bottom:10px;'><strong>You:</strong> {message['content']}</div>", unsafe_allow_html=True)
             else:
-                st.markdown(f"<div style='background-color:#3a3b3c; padding:10px; border-radius:5px; margin-bottom:10px;'><strong>Medical Assistant:</strong> {message['content']}</div>", unsafe_allow_html=True)
+                # Get source if available
+                source_info = ""
+                if "source" in message:
+                    source_info = f"<small>Source: {message['source']}</small>"
+                
+                st.markdown(f"<div style='background-color:#3a3b3c; padding:10px; border-radius:5px; margin-bottom:10px;'><strong>Medical Assistant:</strong> {message['content']}<br>{source_info}</div>", unsafe_allow_html=True)
     
     # Create user input area
     with st.form(key="medical_question_form", clear_on_submit=True):
@@ -375,19 +478,17 @@ def show_ask_medical_questions():
         # Show "thinking" message
         with st.spinner("Generating medical response..."):
             # Query the medical LLM
-            response, from_api = query_medical_llm(user_question)
+            response, from_api, model_name = query_medical_llm(user_question)
             
-            # Add source indication if using fallback
-            if not from_api:
-                response_with_source = response
-            else:
-                response_with_source = response
-            
-            # Add AI response to chat history
-            st.session_state.chat_history.append({"role": "assistant", "content": response_with_source})
+            # Add AI response to chat history with source info
+            st.session_state.chat_history.append({
+                "role": "assistant", 
+                "content": response,
+                "source": model_name
+            })
         
         # Rerun to update the UI with new messages
-        st.rerun()  # Note: Using st.rerun() instead of experimental_rerun
+        st.rerun()  # Using st.rerun() instead of experimental_rerun
     
     # Add disclaimer
     st.markdown("---")
@@ -464,8 +565,8 @@ def show_system_diagnostics():
     
     # System metrics
     st.subheader("System Information")
-    st.info("Streamlit Version: " + st.__version__)
-    st.info("Python Version: " + sys.version.split()[0])
+    st.info(f"Streamlit Version: {st.__version__}")
+    st.info(f"Python Version: {sys.version.split()[0]}")
     
     # Test medical AI
     st.subheader("Test Medical AI")
@@ -476,14 +577,14 @@ def show_system_diagnostics():
     
     if submit and test_query:
         with st.spinner("Testing medical AI..."):
-            response, from_api = query_medical_llm(test_query)
+            response, from_api, model_name = query_medical_llm(test_query)
             st.subheader("Response:")
             st.write(response)
             
             if from_api:
-                st.success("✅ Response from Meditron-7B model")
+                st.success(f"✅ Response from {model_name} model")
             else:
-                st.warning("⚠️ Response from local medical database (API unavailable)")
+                st.warning(f"⚠️ Response from {model_name} (API unavailable)")
 
 # User authentication functions
 def authenticate(username, password):
@@ -532,7 +633,7 @@ def main():
                         st.session_state.logged_in = True
                         st.session_state.username = username
                         st.session_state.role = role
-                        st.rerun()  # Using rerun instead of experimental_rerun
+                        st.rerun()
                     else:
                         st.error("Invalid username or password")
         
@@ -559,7 +660,7 @@ def main():
             
             if st.button("Logout"):
                 st.session_state.logged_in = False
-                st.rerun()  # Using rerun instead of experimental_rerun
+                st.rerun()
         
         with col2:
             # Show selected page
