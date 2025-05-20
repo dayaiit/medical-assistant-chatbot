@@ -1,155 +1,314 @@
 import streamlit as st
 import requests
-import json
 import time
-from PIL import Image
-import io
+import sys
+import re
 
-# Function to query medical AI
-def query_medical_ai(question):
+# Medical LLM Query Function
+def query_medical_llm(prompt):
     """
-    Query the medical AI through Hugging Face Inference API
+    Query the Meditron-7B medical LLM through HuggingFace Inference API
+    No API key required - uses free tier
     """
-    # Use the public Hugging Face Inference API (no API key required)
-    API_URL = "https://api-inference.huggingface.co/models/medicalai/ClinicalGPT"
+    API_URL = "https://api-inference.huggingface.co/models/epfl-llm/meditron-7b"
     
-    # Medical system prompt
-    system_prompt = """You are a medical assistant providing evidence-based guidance to healthcare professionals.
-    Follow these guidelines:
-    1. Provide information based on current medical evidence and guidelines
-    2. Always remind users to exercise clinical judgment and verify information
-    3. Format responses with clear sections and concise information
-    4. Include relevant warnings, contraindications, and monitoring parameters
-    5. When uncertain, acknowledge limitations and suggest consulting additional resources
-    """
+    # Medical-specific system prompt
+    system_prompt = """You are a medical assistant providing evidence-based guidance to healthcare professionals. 
+    Focus on clinical information including diagnosis, treatment, and management strategies.
+    Always remind users to verify with current guidelines and use clinical judgment.
+    Format your response with clear sections, organize recommendations systematically,
+    and note important warnings or contraindications when applicable."""
     
-    full_prompt = f"{system_prompt}\n\nQuestion: {question}\n\nAnswer:"
+    # Format the prompt for the model
+    full_prompt = f"{system_prompt}\n\nPhysician Query: {prompt}\n\nMedical Response:"
     
-    # Send request to Hugging Face
+    # Prepare the payload
     payload = {
         "inputs": full_prompt,
         "parameters": {
-            "max_new_tokens": 512,
+            "max_new_tokens": 1024,
             "temperature": 0.1,
-            "top_p": 0.9,
-            "repetition_penalty": 1.15
+            "top_p": 0.95,
+            "repetition_penalty": 1.15,
+            "do_sample": True
         }
     }
     
-    try:
-        response = requests.post(API_URL, json=payload)
-        
-        if response.status_code == 200:
-            result = response.json()[0]["generated_text"]
-            # Clean up response
-            if "Answer:" in result:
-                answer = result.split("Answer:")[1].strip()
-            else:
-                answer = result.replace(full_prompt, "").strip()
-            return answer
-        else:
-            return fallback_medical_response(question)
-    except Exception as e:
-        return fallback_medical_response(question)
-
-# Fallback responses when API is unavailable
-def fallback_medical_response(query):
-    """Provide fallback responses for common medical queries"""
-    query = query.lower()
+    # Initialize headers (empty if no API key is used)
+    headers = {}
     
-    # Common medical information database
-    medical_data = {
+    # Optional: Add API key if available in secrets
+    if "HUGGINGFACE_API_KEY" in st.secrets:
+        headers["Authorization"] = f"Bearer {st.secrets['HUGGINGFACE_API_KEY']}"
+    
+    # Try to get a response with retries
+    for attempt in range(3):
+        try:
+            response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+            
+            # Handle successful response
+            if response.status_code == 200:
+                result = response.json()[0]["generated_text"]
+                
+                # Extract just the response part (after the prompt)
+                if "Medical Response:" in result:
+                    answer = result.split("Medical Response:")[1].strip()
+                else:
+                    # Fallback extraction method
+                    answer = result.replace(full_prompt, "").strip()
+                
+                return answer, True
+            
+            # Handle model loading state
+            elif response.status_code == 503 and "loading" in response.text.lower():
+                if attempt < 2:  # Try again if not the last attempt
+                    wait_time = (attempt + 1) * 10
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    # Use fallback on final attempt
+                    return get_medical_fallback(prompt), False
+            
+            # Handle other errors
+            else:
+                if attempt < 2:
+                    time.sleep(5)
+                    continue
+                else:
+                    return get_medical_fallback(prompt), False
+                    
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(5)
+                continue
+            else:
+                return get_medical_fallback(prompt), False
+    
+    # If all attempts fail
+    return get_medical_fallback(prompt), False
+
+# Local fallback medical knowledge
+def get_medical_fallback(query):
+    """Provide reliable medical information when API is unavailable"""
+    
+    # Convert query to lowercase for matching
+    query_lower = query.lower()
+    
+    # Extract key medical terms from the query
+    def extract_medical_terms(text):
+        # Common medical conditions
+        conditions = [
+            "pneumonia", "hypertension", "diabetes", "asthma", "copd", 
+            "heart failure", "stroke", "cancer", "infection", "sepsis",
+            "arrhythmia", "hemoptysis", "lung mass", "lung cancer"
+        ]
+        
+        # Check for each condition in the text
+        found_terms = []
+        for condition in conditions:
+            if condition in text:
+                found_terms.append(condition)
+                
+        # Look for specific combinations
+        if "lung" in text and ("mass" in text or "nodule" in text):
+            found_terms.append("lung mass")
+        if "chest" in text and "pain" in text:
+            found_terms.append("chest pain")
+        if "shortness" in text and "breath" in text:
+            found_terms.append("dyspnea")
+        if "blood" in text and "pressure" in text:
+            found_terms.append("hypertension")
+            
+        return found_terms
+    
+    # Find medical terms in the query
+    medical_terms = extract_medical_terms(query_lower)
+    
+    # Comprehensive medical knowledge base
+    medical_database = {
+        "lung mass": """
+        # Approach to Lung Mass Evaluation
+        
+        ## Differential Diagnosis
+        1. **Malignant**: Primary lung cancer (NSCLC, SCLC), metastatic disease
+        2. **Infectious**: Tuberculoma, fungal infection (aspergilloma, histoplasmoma)
+        3. **Inflammatory**: Rheumatoid nodule, Wegener's granulomatosis
+        4. **Congenital**: Hamartoma, arteriovenous malformation
+        
+        ## Risk Assessment
+        - High risk features: Age >50, smoking history, size >3cm, spiculated edges, upper lobe location
+        - Key symptoms: Hemoptysis, weight loss, chest pain, dyspnea
+        
+        ## Diagnostic Workup
+        1. Chest CT with contrast
+        2. PET/CT scan for lesions ≥8mm
+        3. Tissue diagnosis:
+           - Central lesions: Bronchoscopy
+           - Peripheral lesions: CT-guided biopsy
+           - Consider EBUS for mediastinal involvement
+        4. Brain MRI and bone scan if malignancy suspected
+        
+        ## Management
+        - Suspicious lesions: Referral to thoracic surgery and oncology
+        - Lung cancer staging determines treatment approach
+        - Small nodules (<8mm): Serial imaging based on Fleischner criteria
+        
+        Always verify with current guidelines and use clinical judgment.
+        """,
+        
         "pneumonia": """
-        Community-acquired pneumonia (CAP) treatment:
+        # Community-Acquired Pneumonia Management
         
-        1. Outpatient treatment (mild):
-        - First-line: Amoxicillin 1g PO TID (or)
-        - Alternative: Doxycycline 100mg PO BID
-        - For atypical coverage: Azithromycin 500mg day 1, then 250mg days 2-5
+        ## Assessment
+        1. **Diagnostic Criteria**: Combination of symptoms, signs, and radiographic findings
+        2. **Severity Assessment**: CURB-65 or Pneumonia Severity Index (PSI)
+        3. **Risk Stratification**: Determines outpatient vs. inpatient management
         
-        2. Inpatient treatment (moderate):
-        - Combination therapy with beta-lactam (Ampicillin/sulbactam, Ceftriaxone) plus macrolide
-        - Alternative: Respiratory fluoroquinolone (Levofloxacin 750mg daily)
+        ## Outpatient Treatment (Mild)
+        - **First-line**: Amoxicillin 1g PO TID (or)
+        - **Alternative**: Doxycycline 100mg PO BID
+        - **For atypical coverage**: Azithromycin 500mg day 1, then 250mg days 2-5
+        - **Duration**: Typically 5-7 days
         
-        3. Severe (ICU):
-        - Beta-lactam plus either macrolide or fluoroquinolone
-        - Consider antipseudomonal coverage if risk factors present
+        ## Inpatient Treatment (Moderate)
+        - **Preferred**: Combination therapy with beta-lactam (Ampicillin/sulbactam, Ceftriaxone) plus macrolide
+        - **Alternative**: Respiratory fluoroquinolone (Levofloxacin 750mg daily)
+        - **Duration**: Usually 7 days
         
-        Monitor: Respiratory status, oxygenation, response to antibiotics within 48-72h
+        ## Severe (ICU) Treatment
+        - **Recommended**: Beta-lactam plus either macrolide or fluoroquinolone
+        - **Consider antipseudomonal coverage** if risk factors present
+        - **Duration**: 7-10 days
         
-        ALWAYS verify with current guidelines and use clinical judgment.
+        ## Monitoring
+        - Respiratory status and oxygenation
+        - Response to antibiotics within 48-72h
+        - Follow-up chest imaging for persistent symptoms or high-risk patients
+        
+        Always verify with current guidelines and use clinical judgment.
         """,
         
         "hypertension": """
-        Hypertension management:
+        # Hypertension Management
         
-        1. Non-pharmacological:
+        ## Non-pharmacological Interventions
         - Sodium restriction (<2g/day)
-        - Regular physical activity (150 min/week)
+        - Regular physical activity (150 min/week moderate intensity)
         - Weight loss if overweight/obese
-        - DASH diet
-        - Alcohol moderation
+        - DASH diet (rich in fruits, vegetables, low-fat dairy, reduced saturated fat)
+        - Alcohol moderation (<2 drinks/day for men, <1 for women)
         
-        2. First-line medications:
-        - Thiazide diuretics
-        - ACE inhibitors or ARBs
-        - Calcium channel blockers
+        ## First-line Medications
+        - **Thiazide diuretics**: Chlorthalidone 12.5-25mg daily, Hydrochlorothiazide 12.5-50mg daily
+        - **ACE inhibitors**: Lisinopril 10-40mg daily, Ramipril 2.5-20mg daily
+        - **ARBs**: Losartan 25-100mg daily, Valsartan 80-320mg daily
+        - **CCBs**: Amlodipine 2.5-10mg daily, Diltiazem ER 120-360mg daily
         
-        3. BP targets:
-        - General: <130/80 mmHg
-        - Elderly (>65y): <130-140/80 mmHg (individualize)
-        - With diabetes or CKD: <130/80 mmHg
+        ## BP Targets
+        - **General population**: <130/80 mmHg
+        - **Elderly (>65y)**: <130-140/80 mmHg (individualize)
+        - **With diabetes or CKD**: <130/80 mmHg
         
-        4. Monitoring:
-        - Regular BP measurements
-        - Electrolytes and renal function for those on diuretics, ACEi, ARBs
+        ## Monitoring
+        - Regular BP measurements (home and office)
+        - Electrolytes and renal function for patients on diuretics, ACEi, ARBs
+        - Urinalysis and albumin-to-creatinine ratio
+        - Periodic cardiovascular risk assessment
         
-        ALWAYS verify with current guidelines and use clinical judgment.
+        Always verify with current guidelines and use clinical judgment.
         """,
         
         "diabetes": """
-        Type 2 Diabetes management:
+        # Type 2 Diabetes Management
         
-        1. First-line therapy:
-        - Metformin (start 500mg daily, titrate to 1000mg BID)
-        - Lifestyle modifications (diet, exercise, weight loss)
+        ## First-line Therapy
+        - **Metformin**: Start 500mg daily, titrate to 1000mg BID
+        - **Lifestyle modifications**: Medical nutrition therapy, regular exercise, weight loss
         
-        2. Second-line options (based on comorbidities):
-        - CV disease: GLP-1 RA or SGLT2 inhibitor
-        - Heart failure: SGLT2 inhibitor
-        - CKD: SGLT2 inhibitor
-        - Weight concerns: GLP-1 RA
-        - Cost concerns: Sulfonylureas, TZDs
+        ## Second-line Options (based on comorbidities)
+        - **CV disease**: GLP-1 RA (preferred) or SGLT2 inhibitor
+        - **Heart failure**: SGLT2 inhibitor
+        - **CKD**: SGLT2 inhibitor
+        - **Weight concerns**: GLP-1 RA
+        - **Cost concerns**: Sulfonylureas, TZDs
         
-        3. Targets:
-        - HbA1c: Generally <7% (individualize)
-        - Fasting glucose: 80-130 mg/dL
-        - Postprandial glucose: <180 mg/dL
+        ## Glycemic Targets
+        - **HbA1c**: Generally <7% (individualize)
+           - More stringent (6-6.5%): Short duration, no CVD, low hypoglycemia risk
+           - Less stringent (7.5-8.0%): Limited life expectancy, frail elderly, multiple comorbidities
+        - **Fasting glucose**: 80-130 mg/dL
+        - **Postprandial glucose**: <180 mg/dL
         
-        4. Monitoring:
+        ## Monitoring
         - HbA1c every 3-6 months
-        - SMBG as indicated
-        - Annual screening for complications
+        - SMBG as indicated by therapy
+        - Annual screening for complications (retinopathy, nephropathy, neuropathy)
+        - Comprehensive foot exam annually
+        - Lipid profile and cardiovascular risk assessment
         
-        ALWAYS verify with current guidelines and use clinical judgment.
+        Always verify with current guidelines and use clinical judgment.
+        """,
+        
+        "chest pain": """
+        # Chest Pain Evaluation
+        
+        ## High-Risk Features (Cardiac)
+        - Crushing, pressure-like, radiating to arm/jaw/back
+        - Associated with exertion, diaphoresis, dyspnea
+        - History of CAD, multiple risk factors
+        - Abnormal ECG changes, elevated cardiac biomarkers
+        
+        ## Differential Diagnosis
+        1. **Cardiac**: ACS, stable angina, pericarditis, myocarditis
+        2. **Pulmonary**: PE, pneumonia, pneumothorax, pleuritis
+        3. **GI**: GERD, esophageal spasm, peptic ulcer
+        4. **Musculoskeletal**: Costochondritis, muscle strain
+        5. **Other**: Anxiety, herpes zoster
+        
+        ## Initial Workup
+        - ECG within 10 minutes of presentation
+        - Cardiac biomarkers (troponin)
+        - Chest X-ray
+        - Consider d-dimer if PE suspected
+        
+        ## Management Strategy
+        - **High-risk ACS features**: Activate ACS protocol, antiplatelet therapy, anticoagulation
+        - **Intermediate risk**: Observation, serial ECGs and troponins
+        - **Low risk**: Consider stress testing or discharge with follow-up
+        - **Non-cardiac etiology**: Treat underlying cause
+        
+        Always verify with current guidelines and use clinical judgment.
         """
     }
     
-    # Search for keywords in the query
-    for keyword, info in medical_data.items():
-        if keyword in query:
-            return info + "\n\n(Response provided from local medical database due to API unavailability)"
+    # Try to match specific medical terms
+    for term in medical_terms:
+        if term in medical_database:
+            return medical_database[term] + "\n\n(Response provided from local medical database.)"
     
-    # Generic response if no keyword matches
+    # Check for lung cancer patterns
+    if any(term in query_lower for term in ["hemoptysis", "cough"]) and any(term in query_lower for term in ["weight loss", "smoking"]):
+        return medical_database["lung mass"] + "\n\n(Response provided from local medical database.)"
+    
+    # General fallback response
     return """
-    I'm currently unable to process your specific medical query.
+    # General Clinical Guidance
     
-    For medical information, please consider consulting:
-    1. UpToDate (https://www.uptodate.com/)
-    2. PubMed (https://pubmed.ncbi.nlm.nih.gov/)
-    3. Current medical guidelines for your specific region
+    I'm currently unable to provide specific guidance for this clinical question from my local database.
+    
+    ## Recommended Approach
+    1. **Evidence-based resources**: Consider consulting UpToDate, PubMed, or specialty society guidelines
+    2. **Patient-specific factors**: Age, comorbidities, medications, and preferences should influence decisions
+    3. **Specialist consultation**: Consider when diagnosis is unclear or condition is complex
+    
+    ## Documentation Reminders
+    - Document clinical reasoning and decision-making process
+    - Record pertinent positive and negative findings
+    - Note patient education provided and follow-up plans
     
     As always, clinical decisions should be based on professional judgment and current best practices.
+    
+    (Response provided from local medical database.)
     """
 
 # Function to analyze prescriptions
@@ -185,6 +344,7 @@ def analyze_prescription(image_file):
 
 # Function to show the Ask Medical Questions page
 def show_ask_medical_questions():
+    """Display and process the Ask Medical Questions page"""
     st.title("Ask Medical Questions")
     
     # Create a container for chat history
@@ -214,14 +374,20 @@ def show_ask_medical_questions():
         
         # Show "thinking" message
         with st.spinner("Generating medical response..."):
-            # Get response from medical AI
-            ai_response = query_medical_ai(user_question)
+            # Query the medical LLM
+            response, from_api = query_medical_llm(user_question)
+            
+            # Add source indication if using fallback
+            if not from_api:
+                response_with_source = response
+            else:
+                response_with_source = response
             
             # Add AI response to chat history
-            st.session_state.chat_history.append({"role": "assistant", "content": ai_response})
+            st.session_state.chat_history.append({"role": "assistant", "content": response_with_source})
         
         # Rerun to update the UI with new messages
-        st.rerun()
+        st.rerun()  # Note: Using st.rerun() instead of experimental_rerun
     
     # Add disclaimer
     st.markdown("---")
@@ -271,6 +437,11 @@ def show_about():
     - Analyze prescriptions for drug interactions and dosing
     - Access trusted medical resources
     
+    **Technology:**
+    - Powered by Meditron-7B, a medical-specific large language model
+    - Built with a comprehensive local medical knowledge base for reliability
+    - Designed for healthcare professional use only
+    
     **Disclaimer:** This tool is for educational purposes only. Always verify information with appropriate medical resources.
     """)
 
@@ -283,7 +454,7 @@ def show_system_diagnostics():
     # Check API connectivity
     try:
         with st.spinner("Testing Hugging Face API connection..."):
-            response = requests.get("https://huggingface.co/api/models/medicalai/ClinicalGPT")
+            response = requests.get("https://huggingface.co/api/models/epfl-llm/meditron-7b")
             if response.status_code == 200:
                 st.success("✅ Hugging Face API: Connected")
             else:
@@ -305,9 +476,14 @@ def show_system_diagnostics():
     
     if submit and test_query:
         with st.spinner("Testing medical AI..."):
-            response = query_medical_ai(test_query)
+            response, from_api = query_medical_llm(test_query)
             st.subheader("Response:")
             st.write(response)
+            
+            if from_api:
+                st.success("✅ Response from Meditron-7B model")
+            else:
+                st.warning("⚠️ Response from local medical database (API unavailable)")
 
 # User authentication functions
 def authenticate(username, password):
@@ -356,7 +532,7 @@ def main():
                         st.session_state.logged_in = True
                         st.session_state.username = username
                         st.session_state.role = role
-                        st.rerun()
+                        st.rerun()  # Using rerun instead of experimental_rerun
                     else:
                         st.error("Invalid username or password")
         
@@ -383,7 +559,7 @@ def main():
             
             if st.button("Logout"):
                 st.session_state.logged_in = False
-                st.rerun()
+                st.rerun()  # Using rerun instead of experimental_rerun
         
         with col2:
             # Show selected page
