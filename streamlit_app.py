@@ -221,7 +221,7 @@ def show_ask_medical_questions():
             st.session_state.chat_history.append({"role": "assistant", "content": ai_response})
         
         # Rerun to update the UI with new messages
-        st.experimental_rerun()
+        st.rerun()
     
     # Add disclaimer
     st.markdown("---")
@@ -356,7 +356,7 @@ def main():
                         st.session_state.logged_in = True
                         st.session_state.username = username
                         st.session_state.role = role
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error("Invalid username or password")
         
@@ -383,7 +383,7 @@ def main():
             
             if st.button("Logout"):
                 st.session_state.logged_in = False
-                st.experimental_rerun()
+                st.rerun()
         
         with col2:
             # Show selected page
