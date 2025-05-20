@@ -1,106 +1,101 @@
 import streamlit as st
 import requests
-import json
 import time
 
-# Set page title and configuration
-st.set_page_config(
-    page_title="Dr. Daya's Clinic Medical Assistant",
-    page_icon="🏥",
-    layout="wide"
-)
+# Page configuration
+st.set_page_config(page_title="Medical Assistant Chatbot", page_icon="🏥")
 
-# Define user credentials (in a real app, use a more secure method)
+# User credentials
 USERS = {
     "drdaya": "admin123",
     "doctor1": "doctor123",
     "doctor2": "doctor123",
-    "nurse1": "nurse123",
-    "nurse2": "nurse123",
-    "nurse3": "nurse123",
-    "nurse4": "nurse123",
-    "nurse5": "nurse123",
-    "pharmacy": "pharm123",
-    "manager": "manager123"
+    # Add other users as needed
 }
 
-# Function to call Hugging Face's Inference API
-def query_medical_llm(prompt, model_name="aaditya/Llama3-OpenBioLLM-8B"):
-    api_url = f"https://api-inference.huggingface.co/models/{model_name}"
-    
-    # Get API key from Streamlit secrets (add your key in Streamlit Cloud secrets)
-    api_key = st.secrets.get("HUGGINGFACE_API_KEY", "")
-    
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    
-    # Format the prompt properly for LLM models
-    formatted_prompt = f"""
-    <s>[INST] You are an AI medical assistant for Dr. Daya's Clinic. Answer the following medical query professionally:
-    {prompt} [/INST]
-    """
-    
-    data = {
-        "inputs": formatted_prompt,
-        "parameters": {
-            "max_new_tokens": 500,
-            "temperature": 0.7,
-            "top_p": 0.9,
-            "do_sample": True
-        }
-    }
-    
+# Initialize session state
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "username" not in st.session_state:
+    st.session_state.username = None
+
+# Function to get response from Hugging Face
+def get_medical_response(question):
     try:
-        response = requests.post(api_url, headers=headers, json=data)
+        # Use OpenBioLLM-8B model
+        api_url = "https://api-inference.huggingface.co/models/aaditya/Llama3-OpenBioLLM-8B"
         
-        # Check if model is still loading
-        if response.status_code == 503:
-            return "Model is loading. Please try again in a few moments."
+        # Get API key from Streamlit secrets
+        api_key = st.secrets.get("HUGGINGFACE_API_KEY", "")
         
-        result = response.json()
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
         
-        # Handle different response formats
-        if isinstance(result, list) and len(result) > 0:
-            return result[0].get("generated_text", "").split("[/INST]")[-1].strip()
-        elif isinstance(result, dict) and "generated_text" in result:
-            return result["generated_text"].split("[/INST]")[-1].strip()
+        # Format prompt
+        prompt = f"""<s>[INST] You are a medical assistant for Dr. Daya's Clinic.
+        Answer the following medical question professionally:
+        {question} [/INST]"""
+        
+        payload = {
+            "inputs": prompt,
+            "parameters": {
+                "max_new_tokens": 500,
+                "temperature": 0.7
+            }
+        }
+        
+        # Call API
+        response = requests.post(api_url, headers=headers, json=payload)
+        
+        # Store status code for debugging
+        st.session_state.last_status_code = response.status_code
+        
+        if response.status_code == 200:
+            result = response.json()
+            
+            # Extract text from response
+            if isinstance(result, list) and len(result) > 0:
+                answer = result[0].get("generated_text", "").strip()
+            elif isinstance(result, dict) and "generated_text" in result:
+                answer = result["generated_text"].strip()
+            else:
+                return get_offline_response(question)
+                
+            # Extract just the assistant's response
+            if "[/INST]" in answer:
+                answer = answer.split("[/INST]")[-1].strip()
+                
+            return answer
         else:
-            # Fallback response
-            return "I couldn't generate a response. Please try again."
+            # Fall back to offline response
+            return get_offline_response(question)
             
     except Exception as e:
-        # If API call fails, use the fallback response system
-        return get_fallback_response(prompt)
+        st.error(f"Error: {str(e)}")
+        return get_offline_response(question)
 
-# Fallback response function for when API is unavailable
-def get_fallback_response(prompt):
-    # Basic keyword matching for common medical queries
-    prompt_lower = prompt.lower()
+# Function for offline responses
+def get_offline_response(question):
+    question_lower = question.lower()
     
-    if "headache" in prompt_lower:
-        return "Headaches can be caused by various factors including stress, dehydration, lack of sleep, or underlying medical conditions. For occasional headaches, over-the-counter pain relievers may help. If headaches are severe or persistent, please consult with your doctor."
+    if "cranial nerve" in question_lower and "facial" in question_lower:
+        return "The facial nerve (cranial nerve VII) is primarily responsible for facial expression. It innervates the muscles of facial expression and controls most facial movements including those of the forehead, eyelids, cheeks, and mouth."
     
-    elif "blood pressure" in prompt_lower:
-        return "Normal blood pressure is typically around 120/80 mmHg. Hypertension (high blood pressure) is generally considered to be 130/80 mmHg or higher. Regular monitoring and lifestyle modifications such as healthy diet, regular exercise, and stress management are important for maintaining healthy blood pressure."
+    # Add more specific responses
     
-    elif "diabetes" in prompt_lower:
-        return "Diabetes is a chronic condition characterized by high blood sugar levels. Common symptoms include increased thirst, frequent urination, unexplained weight loss, fatigue, and blurred vision. Management typically involves monitoring blood glucose levels, medication or insulin therapy, healthy eating, and regular physical activity."
-    
-    # Add more fallback responses for common queries
-    
-    else:
-        return "I'm currently operating in offline mode. Please try again later when our system is connected to the medical AI service, or contact one of our healthcare professionals directly."
+    # Default response
+    return "I'm currently operating in offline mode. Please try again later when our system is connected to the medical AI service, or contact one of our healthcare professionals directly."
 
-# Login interface
-def login_page():
-    st.title("Dr. Daya's Clinic Medical Assistant")
+# Login page
+def show_login():
+    st.title("Medical Assistant Chatbot")
+    st.subheader("Login")
     
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
-        st.subheader("Login")
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         
@@ -108,45 +103,38 @@ def login_page():
             if username in USERS and USERS[username] == password:
                 st.session_state.logged_in = True
                 st.session_state.username = username
-                st.rerun()
+                st.experimental_rerun()
             else:
                 st.error("Invalid username or password")
 
 # Main application
-def main_app():
-    st.title(f"Dr. Daya's Clinic Medical Assistant")
-    st.subheader(f"Welcome, {st.session_state.username}")
+def show_app():
+    # Sidebar
+    st.sidebar.title("Navigation")
     
-    # Sidebar for navigation
-    with st.sidebar:
-        st.title("Navigation")
-        page = st.radio("Go to", ["Ask Medical Questions", "Prescription Analysis", "About"])
-        
-        if st.button("Logout"):
-            st.session_state.logged_in = False
-            st.rerun()
+    page = st.sidebar.radio("Go to", ["Ask Medical Questions", "Prescription Analysis", "About"])
     
-    # Ask Medical Questions page
+    if st.sidebar.button("Logout"):
+        st.session_state.logged_in = False
+        st.session_state.username = None
+        st.experimental_rerun()
+    
+    # Main content
     if page == "Ask Medical Questions":
-        st.header("Ask Medical Questions")
+        st.title("Ask Medical Questions")
         
-        user_question = st.text_area("Enter your medical question:", height=150)
+        question = st.text_area("Enter your medical question:")
         
         if st.button("Submit Question"):
-            if user_question:
+            if question:
                 with st.spinner("Generating response..."):
-                    # Add artificial delay to simulate processing
-                    time.sleep(1)
-                    response = query_medical_llm(user_question)
-                    
+                    response = get_medical_response(question)
+                
                 st.subheader("Response:")
                 st.write(response)
-            else:
-                st.warning("Please enter a question.")
     
-    # Prescription Analysis page
     elif page == "Prescription Analysis":
-        st.header("Prescription Analysis")
+        st.title("Prescription Analysis")
         
         uploaded_file = st.file_uploader("Upload prescription image", type=["jpg", "jpeg", "png", "pdf"])
         
@@ -155,38 +143,25 @@ def main_app():
             
             if st.button("Analyze Prescription"):
                 with st.spinner("Analyzing prescription..."):
-                    # Simulate processing time
-                    time.sleep(2)
-                    
-                    # In a real implementation, you would extract text from the image and send to LLM
-                    prompt = "Analyze this prescription and provide a summary of medications, dosages, and potential interactions."
-                    response = query_medical_llm(prompt)
+                    # In a real implementation, you would process the image
+                    response = "Prescription analysis feature is currently in development."
                     
                 st.subheader("Analysis Results:")
                 st.write(response)
     
-    # About page
     elif page == "About":
-        st.header("About Dr. Daya's Medical Assistant")
-        st.write("""
-        This Medical Assistant uses advanced AI to provide reliable medical information to healthcare professionals at Dr. Daya's Clinic.
+        st.title("About")
+        st.write("This medical assistant uses AI to help healthcare professionals find accurate medical information.")
+        st.write("Developed for Dr. Daya's Clinic.")
         
-        **Features:**
-        - Medical question answering
-        - Prescription analysis
-        - Evidence-based information
-        
-        **Note:** This assistant is designed as a support tool for healthcare professionals and should not replace professional medical judgment.
-        
-        **Version:** 1.0
-        """)
+        # Debug section (remove in production)
+        if st.checkbox("Show Debug Info"):
+            st.write("API Key exists:", bool(st.secrets.get("HUGGINGFACE_API_KEY", "")))
+            if "last_status_code" in st.session_state:
+                st.write("Last API Status Code:", st.session_state.last_status_code)
 
-# Initialize session state
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-# Main app logic
+# Main logic
 if not st.session_state.logged_in:
-    login_page()
+    show_login()
 else:
-    main_app()
+    show_app()
